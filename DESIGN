@@ -1,0 +1,79 @@
+
+# Base Representation of Radio data
+
+## Requirements
+
+ - Flexible enough to include all possible radio configurations
+ - As little data loss as possible (preferably none, we can use custom fields)
+
+## Memory entries
+
+	- rx freq
+	- tx freq
+	- rx modulation
+	- tx modulation
+	- unsquelch condition
+	  - dtcs
+	  - ctcss
+	  - other paging type modes
+	  - s-unit level
+	  - signal level (not clear how this is different, but yaesu modules distiguish)
+	  - XXX: some radios support fairly complicated options here. Might
+	    need to allow some minimal script-like thing that has access to all
+	    the above data. Then at the time we convert general data to model
+	    specific data, we evaluate the unsquelch and determine if we can
+	    make the radio do something like what the user wants.
+	- tx extra
+	  - dtcs
+	  - ctcss
+	  - other paging types
+	- name
+	- display mode
+	- power level
+	- groups
+
+## Settings
+
+	- name
+	- value
+
+	Driver should expose a list of possible settings & the values for each
+	of them
+
+	names should be generic and un-prefixed, or prefixed with the
+	manuf/model in the same way as linux/openwrt includes model names in
+	led names
+
+# Drivers
+
+2 general ways radios go about managing things:
+ - set things individually (live)
+ - set things all at once (clone)
+
+What API needs to be exposed by drivers?
+
+# Device Description
+
+ - Lots of devices have arbitrary limitations on functionality that would be
+   useful to codify
+ - restricted step by frequency & mode
+ - restricted mode by frequency
+ - limited modes
+ - limited "duplexing"
+
+# Shared parts
+
+ - Apply rules for converting from desired memory entry to allowed memory
+   entry, where a lossy convertion makes sense
+   - Certain fallback-rules might not be global, they might be something that
+     is per-user, per-model, per-memory entry. All of this implies we need a
+     generic way to specify fallback-rules.
+ - 
+
+# User operations
+
+download
+
+upload
+
+modify (hard, may need csv export and the use of external spread sheet program to edit)
