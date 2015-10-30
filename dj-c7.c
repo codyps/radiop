@@ -103,7 +103,7 @@ static void dj_c7_send(struct sp_port *port)
 static void
 dj_c7_recv(struct sp_port *p)
 {
-
+	show_pkt(p);
 }
 
 static const char *opts = "p:hn";
