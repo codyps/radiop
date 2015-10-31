@@ -8,15 +8,86 @@
 #include "print.h"
 
 /*
+ * When "sending", radio sends 42 bytes at a time, each ending with a '\r'
+ * It expects a '\r\nOK\r\n' in reply acknowledging each piece of data
+ *
+ * 0000000000111111111122222222223333333333444
+ * 0123456789012345678901234567890123456789012
+ * AL~F0XX0W012345678901234567890123456789012\r
+ *          |    data bytes in hex          |
+ *      ||-> address
+ *
+ * "AL~F" : 4 bytes: marker, meaning unknown
+ * "0AB0" : 4 bytes: address (2 bytes, lowest and highest always zero)
+ * "W"    : 1 bytes: action, only 'W' seen
+ *        : 32 bytes: data, hex encoded, 16 actual bytes
+ * "\r"   : 1 bytes: packet end
+ *
+ * 0D5D is 27 on unlocked-tx
+ * 0D5D is 23 on locked-tx
+ *
+ * 0D5C is 6c on mprotect on
+ * 0D5C is 2c on mprotect off
+ *
+ * 0D52 is 0A when volume is 10
+ * 0D52 is 09 when volume is 9
+ *
+ * 0D54 is 03 when squelch is 3
+ * 0D54 is 04 when squelch is 4
+ *
+ * 0D5D is 23 when hi-volume
+ * 0D5D is 33 when lo-volume
+ *
+ * 0D5C is 6c when SMA
+ * 0D5C is 7c when Ear
+ *
+ * 0D5D is 33 when rpt normal
+ * 0D5D is B3 when rpt star
+ *
+ * 0D5B is 00 when tone is 1750
+ * 0D5B is 01 when tone is 2100
+ * 0D5B is 02 when tone is 1000
+ * 0D5B is 03 when tone is 1450
+ *
+ * 0D58 is 00 when APO is off
+ * 0D58 is 01 when APO is 30min
+ * 0D58 is 02 when APO is 60min
+ * 0D58 is 03 when APO is 90min
+ *
+ * 0D5C is 5C when bs is off
+ * 0D5C is 7C when bs is on
+ *
+ * 0D5C is 5C when beep is on
+ * 0D5C is 54 when beep is off
+ *
+ * 0D5C is 54 when bell is off
+ * 0D5C is 55 when bell is on
+ *
+ * 0D5D is B3 when "busy"
+ * 0D5D is F3 when "timer"
+ *
+ * 0D5D is 23 when step "auto"
+ * 0D5D is 03 when step "5"
+ *
+ * - freq was 145.000
+ * 0DC6 is 01 when step 5
+ * 0DC6 is 02 when step 6.25
+ * 0DC6 is 03 when step 8.33
+ *
+ * When the first memory location is written, 0D60 has it's high bit set (00 vs 80)
+ *
+ */
+
+
+/*
  * 1st packet sent by radio
  * Sd00
  * Times out (XXX: how long) after no responce
  */
-static const char pkt_1_tx[] =
-"AL~F0000"
-"W0146520"
-"0000001000000000"
-"060000000\x0d";
+static const char pkt_tx[][42] = {
+	"AL~F0000W01465200000001000000000060000000\r",
+	"AL~F0010W01469700000001021010020060000000\r"
+};
 
 /*
  * sent in responce to pkt_1_tx
@@ -26,25 +97,37 @@ static const char pkt_1_rx[] = "\r\nOK\r\n";
 
 static void show_pkt(struct sp_port *port)
 {
-	char buf[1024];
+	char buf[42];
 	size_t pos = 0;
 
 	for (;;) {
-		enum sp_return sr = sp_blocking_read(port, buf + pos, sizeof(buf) - pos, 500);
+		enum sp_return sr = sp_blocking_read(port, buf + pos, sizeof(buf) - pos, 100);
 		if (sr < 0) {
 			fprintf(stderr, "E: failed to read packet: %d\n", sr);
 			exit(EXIT_FAILURE);
 		}
 		if (sr == 0) {
 			/* nada, print remainder and exit */
-			printf("\n");
-			return;
+			if (pos) {
+				printf("timed out with data: ");
+				print_bytes_as_cstring(buf, pos, stdout);
+				printf(", flushing\n");
+				pos = 0;
+			} else
+				putc('.', stderr);
+			continue;
 		}
 
-		/* todo: print in chunks */
+		/* look for a '\r' */
+		char *end = memchr(buf + pos, '\r', sr);
 		pos += sr;
-		print_bytes_as_cstring(buf, pos, stdout);
-		pos = 0;
+		if (end) {
+			print_bytes_as_cstring(buf, pos, stdout);
+			putchar('\n');
+			fflush(stdout);
+			pos = 0;
+			return;
+		}
 	}
 }
 
@@ -69,12 +152,18 @@ static enum sp_return sp_blocking_write_echocancel(struct sp_port *port, const v
 		return sr2;
 	}
 
+#if 0
+	printf("canceling: ");
+	print_bytes_as_cstring(echo_buf, sr2, stdout);
+	putchar('\n');
+#endif
+
 	if (sr2 != sr1) {
 		fprintf(stderr, "E: did not read enough echo-cancel data, got %d out of %d bytes\n", sr2, sr1);
 		return SP_ERR_FAIL;
 	}
 
-	if (memcmp(buf, pkt_1_tx, sr1)) {
+	if (memcmp(buf, echo_buf, sr1)) {
 		fprintf(stderr, "E: echo-cancel data is not equal to sent data\n");
 		return SP_ERR_FAIL;
 	}
@@ -84,14 +173,14 @@ static enum sp_return sp_blocking_write_echocancel(struct sp_port *port, const v
 
 static void dj_c7_send(struct sp_port *port)
 {
-	enum sp_return sr1 = sp_blocking_write_echocancel(port, pkt_1_tx, sizeof(pkt_1_tx) - 1, 0, 200);
+	enum sp_return sr1 = sp_blocking_write_echocancel(port, pkt_tx[0], sizeof(pkt_tx[0]) - 1, 0, 200);
 	if (sr1 < 0) {
 		fprintf(stderr, "E: failed to write packet: %d\n", sr1);
 		exit(EXIT_FAILURE);
 	}
 
-	if ((size_t)sr1 != sizeof(pkt_1_tx) - 1) {
-		fprintf(stderr, "E: failed to send entire packet, sent %d out of %zu bytes\n", sr1, sizeof(pkt_1_tx) - 1);
+	if ((size_t)sr1 != sizeof(pkt_tx[0]) - 1) {
+		fprintf(stderr, "E: failed to send entire packet, sent %d out of %zu bytes\n", sr1, sizeof(pkt_tx[0]) - 1);
 		exit(EXIT_FAILURE);
 	}
 
@@ -101,9 +190,16 @@ static void dj_c7_send(struct sp_port *port)
 }
 
 static void
-dj_c7_recv(struct sp_port *p)
+dj_c7_recv(struct sp_port *port)
 {
-	show_pkt(p);
+	for (;;) {
+		show_pkt(port);
+		enum sp_return sr1 = sp_blocking_write_echocancel(port, pkt_1_rx, sizeof(pkt_1_rx) - 1, 0, 100);
+		if (sr1 < 0) {
+			fprintf(stderr, "E: failed to read\n");
+			exit(EXIT_FAILURE);
+		}
+	}
 }
 
 static const char *opts = "p:hn";
