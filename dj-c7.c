@@ -1,3 +1,5 @@
+#include <assert.h>
+#include <inttypes.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -6,6 +8,16 @@
 
 #include <libserialport.h>
 #include "print.h"
+
+/*
+ * Decode stages:
+ *
+ *  protocol
+ *   -> interperet into
+ *  memory (binary)
+ *   -> interperet fields
+ *  generalized config
+ */
 
 /*
  * When "sending", radio sends 42 bytes at a time, each ending with a '\r'
@@ -73,6 +85,7 @@
  * 0DC6 is 01 when step 5
  * 0DC6 is 02 when step 6.25
  * 0DC6 is 03 when step 8.33
+ * 0DC6 is 04 when step 10
  *
  * When the first memory location is written, 0D60 has it's high bit set (00 vs 80)
  *
@@ -84,7 +97,8 @@
  * Sd00
  * Times out (XXX: how long) after no responce
  */
-static const char pkt_tx[][42] = {
+#define PKT_BYTES 42
+static const char pkt_tx[][PKT_BYTES] = {
 	"AL~F0000W01465200000001000000000060000000\r",
 	"AL~F0010W01469700000001021010020060000000\r"
 };
@@ -97,7 +111,7 @@ static const char pkt_1_rx[] = "\r\nOK\r\n";
 
 static void show_pkt(struct sp_port *port)
 {
-	char buf[42];
+	char buf[PKT_BYTES];
 	size_t pos = 0;
 
 	for (;;) {
@@ -127,6 +141,39 @@ static void show_pkt(struct sp_port *port)
 			fflush(stdout);
 			pos = 0;
 			return;
+		}
+	}
+}
+
+static ssize_t
+read_pkt(struct sp_port *port, char buf[static PKT_BYTES], size_t len)
+{
+	(void)len;
+	size_t pos = 0;
+
+	for (;;) {
+		enum sp_return sr = sp_blocking_read(port, buf + pos, PKT_BYTES - pos, 100);
+		if (sr < 0) {
+			fprintf(stderr, "E: failed to read packet: %d\n", sr);
+			exit(EXIT_FAILURE);
+		}
+		if (sr == 0) {
+			/* nada, print remainder and exit */
+			if (pos) {
+				printf("timed out with data: ");
+				print_bytes_as_cstring(buf, pos, stdout);
+				printf(", flushing\n");
+				pos = 0;
+			} else
+				putc('.', stderr);
+			continue;
+		}
+
+		/* look for a '\r' */
+		char *end = memchr(buf + pos, '\r', sr);
+		pos += sr;
+		if (end) {
+			return pos;
 		}
 	}
 }
@@ -189,11 +236,148 @@ static void dj_c7_send(struct sp_port *port)
 	show_pkt(port);
 }
 
-static void
-dj_c7_recv(struct sp_port *port)
+struct dj_c7_pkt {
+	uint8_t magic[4];
+	uint_fast16_t offset;
+	char action;
+	uint8_t data[16];
+};
+
+static int_fast16_t
+decode_hex_nibble(char c)
 {
+	if ('A' <= c && c <= 'F') {
+		return c - 'A' + 10;
+	} else if ('0' <= c && c <= '9') {
+		return c - '0';
+	} else
+		return -1;
+}
+
+static int_fast16_t
+decode_hex(char buf[static 2])
+{
+	int_fast16_t r1 = decode_hex_nibble(buf[0]);
+	if (r1 < 0)
+		return r1;
+	
+	int_fast16_t r2 = decode_hex_nibble(buf[1]);
+	if (r2 < 0)
+		return r2;
+
+	return r1 << 4 | r2;
+}
+
+static int
+decode_hex_buf(size_t len, char in[static len * 2], uint8_t out[static len])
+{
+	size_t i;
+	for (i = 0; i < len; i ++) {
+		int_fast16_t r = decode_hex(in + i * 2);
+		if (r < 0) {
+			fprintf(stderr, "E: decode hex failed at offset %zu out of %zu\n", i * 2, len);
+			return r;
+		}
+
+		out[i] = r;
+	}
+	
+	return 0;
+}
+
+static int_least32_t
+decode_hex_16(char buf[static 4])
+{
+	int_fast16_t r = decode_hex(buf);
+	if (r < 0)
+		return r;
+
+	int_fast16_t r2 = decode_hex(buf + 2);
+	if (r2 < 0)
+		return r2;
+
+	return r << 8 | r2;
+}
+
+static int
+pkt_decode(struct dj_c7_pkt *pkt, char buf[static PKT_BYTES])
+{
+	memcpy(pkt->magic, buf, sizeof(pkt->magic));
+	buf += sizeof(pkt->magic);
+	int_least32_t off = decode_hex_16(buf);
+	if (off >= 0)
+		pkt->offset = off;
+	else
+		pkt->offset = 0;
+	buf += 4;
+	pkt->action = *buf;
+	buf ++;
+	int r = decode_hex_buf(sizeof(pkt->data), buf, pkt->data);
+
+	if (off < 0) {
+		fprintf(stderr, "E: offset decode failed: %"PRIdLEAST32"\n", off);
+		return -1;
+	}
+
+	if (r < 0) {
+		fprintf(stderr, "E: data decode failed: %d\n", r);
+		memset(pkt->data, 0, sizeof(pkt->data));
+		return -2;
+	}
+
+	return 0;
+}
+
+static void
+pkt_validate(struct dj_c7_pkt *pkt)
+{
+	if (memcmp(pkt->magic, "AL~F", sizeof(pkt->magic))) {
+		fprintf(stderr, "W: magic mis-match, have ");
+		print_bytes_as_cstring(pkt->magic, sizeof(pkt->magic), stderr);
+		fprintf(stderr, "\n");
+	}
+
+	if (pkt->action != 'W') {
+		fprintf(stderr, "W: unknown action '%c' (%d)\n", pkt->action, pkt->action);
+	}
+
+	if (pkt->offset & 0xf) {
+		fprintf(stderr, "W: low nibble in offset set: %#04"PRIxFAST16"\n", pkt->offset);
+	}
+
+	if (pkt->offset & 0xf000) {
+		fprintf(stderr, "W: high nibble in offset set: %#04"PRIxFAST16"\n", pkt->offset);
+	}
+}
+
+static void
+dj_c7_recv(struct sp_port *port, FILE *out)
+{
+	char buf[PKT_BYTES];
 	for (;;) {
-		show_pkt(port);
+		ssize_t r = read_pkt(port, buf, sizeof(buf));
+		if (r != sizeof(buf)) {
+			fprintf(stderr, "E: short read of %zd\n", r);
+			continue;
+		}
+
+		struct dj_c7_pkt pkt;
+		if (pkt_decode(&pkt, buf) < 0) {
+			fprintf(stderr, "E: decode failed\n");
+			continue;
+		}
+
+		pkt_validate(&pkt);
+
+		/* do something with the data we have */
+		switch (pkt.action) {
+		case 'W':
+			if (out) {
+				assert(fseek(out, pkt.offset, SEEK_SET) == 0);
+				assert(fwrite(pkt.data, sizeof(pkt.data), 1, out) == 1);
+			}
+		}
+
 		enum sp_return sr1 = sp_blocking_write_echocancel(port, pkt_1_rx, sizeof(pkt_1_rx) - 1, 0, 100);
 		if (sr1 < 0) {
 			fprintf(stderr, "E: failed to read\n");
@@ -202,7 +386,7 @@ dj_c7_recv(struct sp_port *port)
 	}
 }
 
-static const char *opts = "p:hn";
+static const char *opts = "p:hnb:";
 
 static void usage_(const char *prgm, int e)
 {
@@ -213,7 +397,7 @@ static void usage_(const char *prgm, int e)
 		f = stdout;
 
 	fprintf(f,
-"usage: %s -p <serial-port> <action>\n"
+"usage: %s -p <serial-port> -b <binary file> <action>\n"
 "actions:\n"
 " send\n"
 " receive\n"
@@ -230,6 +414,7 @@ int main(int argc, char *argv[])
 	int e = 0;
 	const char *port_name = NULL;
 	bool do_config = true;
+	FILE *out_binary = NULL;
 	int opt;
 
 	while ((opt = getopt(argc, argv, opts)) != -1) {
@@ -242,6 +427,13 @@ int main(int argc, char *argv[])
 			break;
 		case 'n':
 			do_config = false;
+			break;
+		case 'b':
+			out_binary = fopen(optarg, "w");
+			if (!out_binary) {
+				fprintf(stderr, "E: failed to open '%s'\n", optarg);
+				e++;
+			}
 			break;
 		default:
 			e++;
@@ -329,7 +521,8 @@ int main(int argc, char *argv[])
 		dj_c7_send(port);
 		break;
 	case 'r':
-		dj_c7_recv(port);
+		dj_c7_recv(port, out_binary);
+		fclose(out_binary);
 		break;
 	default:
 		fprintf(stderr, "E: unknown action '%s'\n", action);
