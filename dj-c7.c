@@ -106,43 +106,6 @@ static const struct dj_parms dj_c7 = {
 	.mem_size = 0xfff + 1,
 };
 
-
-static void show_pkt(struct sp_port *port)
-{
-	char buf[PKT_BYTES];
-	size_t pos = 0;
-
-	for (;;) {
-		enum sp_return sr = sp_blocking_read(port, buf + pos, sizeof(buf) - pos, 100);
-		if (sr < 0) {
-			fprintf(stderr, "E: failed to read packet: %d\n", sr);
-			exit(EXIT_FAILURE);
-		}
-		if (sr == 0) {
-			/* nada, print remainder and exit */
-			if (pos) {
-				printf("timed out with data: ");
-				print_bytes_as_cstring(buf, pos, stdout);
-				printf(", flushing\n");
-				pos = 0;
-			} else
-				putc('.', stderr);
-			continue;
-		}
-
-		/* look for a '\r' */
-		char *end = memchr(buf + pos, '\r', sr);
-		pos += sr;
-		if (end) {
-			print_bytes_as_cstring(buf, pos, stdout);
-			putchar('\n');
-			fflush(stdout);
-			pos = 0;
-			return;
-		}
-	}
-}
-
 static ssize_t
 read_pkt(struct sp_port *port, char buf[static PKT_BYTES], size_t len)
 {
@@ -222,13 +185,17 @@ static void pkt_encode(const struct dj_parms *p, uint_fast16_t offset, const uns
 	pkt += sizeof(p->magic);
 
 	assert(offset <= 0xffff);
-	sprintf((char *)pkt, "%#04" PRIXFAST16, offset);
+	sprintf((char *)pkt, "%04" PRIXFAST16, offset);
 
 	pkt += 4;
 
+	*pkt = 'W';
+	
+	pkt ++;
+
 	size_t i;
 	for (i = 0; i < 16; i++) {
-		sprintf((char *)pkt, "%#04X", buf[i]);
+		sprintf((char *)pkt, "%02X", buf[i]);
 		pkt += 2;
 	}
 
@@ -358,9 +325,13 @@ pkt_is_ok(const struct dj_parms *p, struct dj_c7_pkt *pkt)
 	return !e;
 }
 
+
+#define debug_send(...) fprintf(stderr, "SEND: " __VA_ARGS__)
+
 static void dj_send(const struct dj_parms *p, struct sp_port *port, FILE *in)
 {
 	unsigned char buf[16];
+	char ack_buf[PKT_BYTES];
 	char pkt[PKT_BYTES];
 
 	size_t i;
@@ -379,8 +350,10 @@ static void dj_send(const struct dj_parms *p, struct sp_port *port, FILE *in)
 		pkt_encode(p, i << 4, buf, pkt);
 
 		struct dj_c7_pkt p_dec;
-		if (pkt_decode(&p_dec, pkt) != -1) {
-			fprintf(stderr, "E: could not decode a packet I generated\n");
+		if (pkt_decode(&p_dec, pkt) < 0) {
+			fprintf(stderr, "E: could not decode a packet I generated: ");
+			print_bytes_as_cstring(pkt, PKT_BYTES, stderr);
+			putc('\n', stderr);
 			exit(EXIT_FAILURE);
 		}
 
@@ -400,9 +373,21 @@ static void dj_send(const struct dj_parms *p, struct sp_port *port, FILE *in)
 			exit(EXIT_FAILURE);
 		}
 
-		fprintf(stderr, "I: sent %d bytes\n", sr1);
+		debug_send("I: sent %d bytes\n", sr1);
 
-		show_pkt(port);
+		enum sp_return sr = sp_blocking_read(port, ack_buf, sizeof(ack_buf), 100);
+		if (sr < 0) {
+			fprintf(stderr, "E: failed to read packet: %d\n", sr);
+			exit(EXIT_FAILURE);
+		}
+
+		if ((size_t)sr != strlen(p->ack) || memcmp(p->ack, ack_buf, sr)) {
+			fprintf(stderr, "W: offset %#04zx was not acked, got: ", i << 4);
+			print_bytes_as_cstring(ack_buf, sr, stderr);
+			putc('\n', stderr);
+		}
+
+		i ++;
 	}
 }
 
@@ -633,8 +618,6 @@ int main(int argc, char *argv[])
 		}
 
 		dj_send(&dj_c7, port, f);
-
-		fclose(f);
 		break;
 	case 'r': {
 		if (file) {
