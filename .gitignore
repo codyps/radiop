@@ -1,3 +1,5 @@
 .ninja_*
 build.ninja
 dj-c7
+
+data/

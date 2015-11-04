@@ -21,7 +21,8 @@
 
 /*
  * When "sending", radio sends 42 bytes at a time, each ending with a '\r'
- * It expects a '\r\nOK\r\n' in reply acknowledging each piece of data
+ * It expects a '\r\nOK\r\n' in reply acknowledging each piece of data. After a
+ * short timeout, it will display "Failed" if no ack is recieved.
  *
  * 0000000000111111111122222222223333333333444
  * 0123456789012345678901234567890123456789012
@@ -91,23 +92,20 @@
  *
  */
 
-
-/*
- * 1st packet sent by radio
- * Sd00
- * Times out (XXX: how long) after no responce
- */
 #define PKT_BYTES 42
-static const char pkt_tx[][PKT_BYTES] = {
-	"AL~F0000W01465200000001000000000060000000\r",
-	"AL~F0010W01469700000001021010020060000000\r"
+
+struct dj_parms {
+	const char *ack;
+	const char magic[4];
+	size_t mem_size;
 };
 
-/*
- * sent in responce to pkt_1_tx
- * Ld00
- */
-static const char pkt_1_rx[] = "\r\nOK\r\n";
+static const struct dj_parms dj_c7 = {
+	.ack = "\r\nOK\r\n",
+	.magic = "AL~F",
+	.mem_size = 0xfff + 1,
+};
+
 
 static void show_pkt(struct sp_port *port)
 {
@@ -218,22 +216,23 @@ static enum sp_return sp_blocking_write_echocancel(struct sp_port *port, const v
 	return sr1;
 }
 
-static void dj_c7_send(struct sp_port *port)
+static void pkt_encode(const struct dj_parms *p, uint_fast16_t offset, const unsigned char *buf, char *pkt)
 {
-	enum sp_return sr1 = sp_blocking_write_echocancel(port, pkt_tx[0], sizeof(pkt_tx[0]) - 1, 0, 200);
-	if (sr1 < 0) {
-		fprintf(stderr, "E: failed to write packet: %d\n", sr1);
-		exit(EXIT_FAILURE);
+	memcpy(pkt, p->magic, sizeof(p->magic));
+	pkt += sizeof(p->magic);
+
+	assert(offset <= 0xffff);
+	sprintf((char *)pkt, "%#04" PRIXFAST16, offset);
+
+	pkt += 4;
+
+	size_t i;
+	for (i = 0; i < 16; i++) {
+		sprintf((char *)pkt, "%#04X", buf[i]);
+		pkt += 2;
 	}
 
-	if ((size_t)sr1 != sizeof(pkt_tx[0]) - 1) {
-		fprintf(stderr, "E: failed to send entire packet, sent %d out of %zu bytes\n", sr1, sizeof(pkt_tx[0]) - 1);
-		exit(EXIT_FAILURE);
-	}
-
-	fprintf(stderr, "I: sent %d bytes\n", sr1);
-
-	show_pkt(port);
+	*pkt = '\r';
 }
 
 struct dj_c7_pkt {
@@ -328,62 +327,169 @@ pkt_decode(struct dj_c7_pkt *pkt, char buf[static PKT_BYTES])
 	return 0;
 }
 
-static void
-pkt_validate(struct dj_c7_pkt *pkt)
+
+static bool
+pkt_is_ok(const struct dj_parms *p, struct dj_c7_pkt *pkt)
 {
-	if (memcmp(pkt->magic, "AL~F", sizeof(pkt->magic))) {
+	int e = 0;
+	if (memcmp(pkt->magic, p->magic, sizeof(pkt->magic))) {
 		fprintf(stderr, "W: magic mis-match, have ");
 		print_bytes_as_cstring(pkt->magic, sizeof(pkt->magic), stderr);
 		fprintf(stderr, "\n");
+		e++;
 	}
 
 	if (pkt->action != 'W') {
 		fprintf(stderr, "W: unknown action '%c' (%d)\n", pkt->action, pkt->action);
+		e++;
 	}
 
 	if (pkt->offset & 0xf) {
-		fprintf(stderr, "W: low nibble in offset set: %#04"PRIxFAST16"\n", pkt->offset);
+		fprintf(stderr, "E: low nibble in offset set: %#04"PRIxFAST16"\n", pkt->offset);
+		e++;
 	}
 
-	if (pkt->offset & 0xf000) {
-		fprintf(stderr, "W: high nibble in offset set: %#04"PRIxFAST16"\n", pkt->offset);
+	if (pkt->offset > p->mem_size) {
+		fprintf(stderr, "E: offset exceeds memory size: %#04"PRIxFAST16" > %#04zx\n",
+				pkt->offset, p->mem_size);
+		e++;
+	}
+
+	return !e;
+}
+
+static void dj_send(const struct dj_parms *p, struct sp_port *port, FILE *in)
+{
+	unsigned char buf[16];
+	char pkt[PKT_BYTES];
+
+	size_t i;
+	for (i = 0;;) {
+		size_t l = fread(buf, 16, 1, in);
+		if (l != 1) {
+			if (feof(in)) {
+				fprintf(stderr, "I: done\n");
+				return;
+			} else {
+				fprintf(stderr, "E: error reading input file\n");
+				return;
+			}
+		}
+
+		pkt_encode(p, i << 4, buf, pkt);
+
+		struct dj_c7_pkt p_dec;
+		if (pkt_decode(&p_dec, pkt) != -1) {
+			fprintf(stderr, "E: could not decode a packet I generated\n");
+			exit(EXIT_FAILURE);
+		}
+
+		if (!pkt_is_ok(p, &p_dec)) {
+			fprintf(stderr, "E: a packet I generated was bad\n");
+			exit(EXIT_FAILURE);
+		}
+
+		enum sp_return sr1 = sp_blocking_write_echocancel(port, pkt, sizeof(pkt), 0, 200);
+		if (sr1 < 0) {
+			fprintf(stderr, "E: failed to write packet: %d\n", sr1);
+			exit(EXIT_FAILURE);
+		}
+
+		if ((size_t)sr1 != sizeof(pkt)) {
+			fprintf(stderr, "E: failed to send entire packet, sent %d out of %zu bytes\n", sr1, sizeof(pkt));
+			exit(EXIT_FAILURE);
+		}
+
+		fprintf(stderr, "I: sent %d bytes\n", sr1);
+
+		show_pkt(port);
 	}
 }
 
 static void
-dj_c7_recv(struct sp_port *port, FILE *out)
+__attribute__((format(printf, 1, 2)))
+check_printf(const char *fmt, ...)
 {
+	(void)fmt;
+}
+
+#ifdef DEBUG_RECV
+#define debug_recv(...) fprintf(stderr, "RECV: " __VA_ARGS__)
+#else
+#define debug_recv(...) check_printf(__VA_ARGS__)
+#endif
+
+/*
+ * TODO: consider if anyone would want to get a raw-er dump of the transfer
+ */
+static void *
+dj_recv(const struct dj_parms *p, struct sp_port *port)
+{
+	/* place to put decoded data */
+	/* FIXME: we just assume data is zero'd in non-included areas
+	 */
+	void *data = calloc(p->mem_size, 1);
+	assert(data);
+
 	char buf[PKT_BYTES];
-	for (;;) {
+	size_t i;
+	for (i = 0;;) {
 		ssize_t r = read_pkt(port, buf, sizeof(buf));
 		if (r != sizeof(buf)) {
 			fprintf(stderr, "E: short read of %zd\n", r);
 			continue;
 		}
 
+		debug_recv("read_pkt\n");
+
 		struct dj_c7_pkt pkt;
 		if (pkt_decode(&pkt, buf) < 0) {
-			fprintf(stderr, "E: decode failed\n");
+			fprintf(stderr, "E: decode failed, skipping packet\n");
 			continue;
 		}
 
-		pkt_validate(&pkt);
+		debug_recv("pkt_decode\n");
+
+		if (!pkt_is_ok(p, &pkt)) {
+			fprintf(stderr, "W: skipping packet\n");
+			continue;
+		}
+
+		debug_recv("pkt_is_ok\n");
+
+		if (pkt.offset >> 4 != i) {
+			if (pkt.offset >> 4 > i) {
+				fprintf(stderr, "W: jump from %#04zx to %#04" PRIxFAST16 ", continuing\n", i << 4, pkt.offset);
+			} else {
+				fprintf(stderr, "E: jump from %#04zx to %#04" PRIxFAST16 ", DATA WILL BE LOST\n", i << 4, pkt.offset);
+			}
+			i = pkt.offset >> 4;
+		}
 
 		/* do something with the data we have */
 		switch (pkt.action) {
 		case 'W':
-			if (out) {
-				assert(fseek(out, pkt.offset, SEEK_SET) == 0);
-				assert(fwrite(pkt.data, sizeof(pkt.data), 1, out) == 1);
-			}
+			debug_recv("writing to %#04"PRIxFAST16"\n", pkt.offset);
+			memcpy((char *)data + pkt.offset, pkt.data, sizeof(pkt.data));
+			debug_recv("wrote\n");
+			break;
 		}
+	
+		debug_recv("write\n");
 
-		enum sp_return sr1 = sp_blocking_write_echocancel(port, pkt_1_rx, sizeof(pkt_1_rx) - 1, 0, 100);
+		i++;
+
+		enum sp_return sr1 = sp_blocking_write_echocancel(port, p->ack, strlen(p->ack), 0, 100);
 		if (sr1 < 0) {
-			fprintf(stderr, "E: failed to read\n");
+			fprintf(stderr, "E: failed to write ack\n");
 			exit(EXIT_FAILURE);
 		}
+
+		if ((i  << 4) >= p->mem_size)
+			break;
 	}
+
+	return data;
 }
 
 static const char *opts = "p:hnb:";
@@ -414,7 +520,7 @@ int main(int argc, char *argv[])
 	int e = 0;
 	const char *port_name = NULL;
 	bool do_config = true;
-	FILE *out_binary = NULL;
+	const char *file = NULL;
 	int opt;
 
 	while ((opt = getopt(argc, argv, opts)) != -1) {
@@ -429,11 +535,7 @@ int main(int argc, char *argv[])
 			do_config = false;
 			break;
 		case 'b':
-			out_binary = fopen(optarg, "w");
-			if (!out_binary) {
-				fprintf(stderr, "E: failed to open '%s'\n", optarg);
-				e++;
-			}
+			file = optarg;
 			break;
 		default:
 			e++;
@@ -462,7 +564,7 @@ int main(int argc, char *argv[])
 		exit(EXIT_FAILURE);
 	}
 
-	struct sp_port_config *config;
+	struct sp_port_config *config = NULL;
 	if (do_config) {
 		sr = sp_new_config(&config);
 		if (sr != SP_OK) {
@@ -516,18 +618,45 @@ int main(int argc, char *argv[])
 	}
 
 	const char *action = argv[optind];
+	FILE *f = NULL;
 	switch (*action) {
 	case 's':
-		dj_c7_send(port);
+		if (!file) {
+			fprintf(stderr, "E: a file is required\n");
+			exit(EXIT_FAILURE);
+		}
+
+		f = fopen(file, "r");
+		if (!f) {
+			fprintf(stderr, "E: could not open file '%s'\n", file);
+			exit(EXIT_FAILURE);
+		}
+
+		dj_send(&dj_c7, port, f);
+
+		fclose(f);
 		break;
-	case 'r':
-		dj_c7_recv(port, out_binary);
-		fclose(out_binary);
+	case 'r': {
+		if (file) {
+			f = fopen(file, "w");
+			if (!f) {
+				fprintf(stderr, "E: could not open file '%s'\n", file);
+				exit(EXIT_FAILURE);
+			}
+		}
+		void *data = dj_recv(&dj_c7, port);
+		fwrite(data, dj_c7.mem_size, 1, f);
+		free(data);
 		break;
+ 	}
 	default:
 		fprintf(stderr, "E: unknown action '%s'\n", action);
 		exit(EXIT_FAILURE);
 	}
 
+	if (f)
+		fclose(f);
+	sp_close(port);
+	sp_free_config(config);
 	return 0;
 }
