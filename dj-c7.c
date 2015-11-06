@@ -325,8 +325,19 @@ pkt_is_ok(const struct dj_parms *p, struct dj_c7_pkt *pkt)
 	return !e;
 }
 
+static void
+__attribute__((format(printf, 1, 2)))
+check_printf(const char *fmt, ...)
+{
+	(void)fmt;
+}
 
+
+#ifdef DEBUG_SEND
 #define debug_send(...) fprintf(stderr, "SEND: " __VA_ARGS__)
+#else
+#define debug_send(...) check_printf(__VA_ARGS__)
+#endif
 
 static void dj_send(const struct dj_parms *p, struct sp_port *port, FILE *in)
 {
@@ -384,18 +395,13 @@ static void dj_send(const struct dj_parms *p, struct sp_port *port, FILE *in)
 		if ((size_t)sr != strlen(p->ack) || memcmp(p->ack, ack_buf, sr)) {
 			fprintf(stderr, "W: offset %#04zx was not acked, got: ", i << 4);
 			print_bytes_as_cstring(ack_buf, sr, stderr);
+			fprintf(stderr, "\nW: packet was: ");
+			print_bytes_as_cstring(pkt, sizeof(pkt), stderr);
 			putc('\n', stderr);
 		}
 
 		i ++;
 	}
-}
-
-static void
-__attribute__((format(printf, 1, 2)))
-check_printf(const char *fmt, ...)
-{
-	(void)fmt;
 }
 
 #ifdef DEBUG_RECV
