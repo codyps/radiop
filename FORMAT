@@ -1,0 +1,45 @@
+0. baseline for raw radio data
+1. completely generalized
+
+ #0 is not very nice
+
+ #1 has issues when we don't know what all the memory fields actually mean
+
+## yac shaving:
+# - generic schema description syntax?
+
+/* v0 */
+struct MemDump {
+	
+}
+
+
+{
+	'version' : '0',
+	'mem' : {
+		'kind' : 'radio-name',
+		'data' : {
+			offset : [bytes]
+		}
+	}
+}
+
+{
+	'version' : '1',
+	'config' : [
+			
+	]
+	'groups' : { }
+	'channels' : [
+		{
+			'#' : number,
+			'name' : name,
+			'tx' : {
+
+			},
+			'rx': {
+
+			}
+		}	
+	]
+}
