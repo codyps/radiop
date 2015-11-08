@@ -93,10 +93,12 @@
  */
 
 #define PKT_BYTES 42
+#define MAGIC_LEN 4
+#define DATA_LEN 16
 
 struct dj_parms {
 	const char *ack;
-	const char magic[4];
+	const char magic[MAGIC_LEN];
 	size_t mem_size;
 };
 
@@ -105,6 +107,14 @@ static const struct dj_parms dj_c7 = {
 	.magic = "AL~F",
 	.mem_size = 0xfff + 1,
 };
+
+struct dj_c7_pkt {
+	uint8_t magic[MAGIC_LEN];
+	uint_fast16_t offset;
+	char action;
+	uint8_t data[DATA_LEN];
+};
+
 
 static ssize_t
 read_pkt(struct sp_port *port, char buf[static PKT_BYTES], size_t len)
@@ -194,20 +204,13 @@ static void pkt_encode(const struct dj_parms *p, uint_fast16_t offset, const uns
 	pkt ++;
 
 	size_t i;
-	for (i = 0; i < 16; i++) {
+	for (i = 0; i < DATA_LEN; i++) {
 		sprintf((char *)pkt, "%02X", buf[i]);
 		pkt += 2;
 	}
 
 	*pkt = '\r';
 }
-
-struct dj_c7_pkt {
-	uint8_t magic[4];
-	uint_fast16_t offset;
-	char action;
-	uint8_t data[16];
-};
 
 static int_fast16_t
 decode_hex_nibble(char c)
@@ -341,13 +344,13 @@ check_printf(const char *fmt, ...)
 
 static void dj_send(const struct dj_parms *p, struct sp_port *port, FILE *in)
 {
-	unsigned char buf[16];
+	unsigned char buf[DATA_LEN];
 	char ack_buf[PKT_BYTES];
 	char pkt[PKT_BYTES];
 
 	size_t i;
 	for (i = 0;;) {
-		size_t l = fread(buf, 16, 1, in);
+		size_t l = fread(buf, sizeof(buf), 1, in);
 		if (l != 1) {
 			if (feof(in)) {
 				fprintf(stderr, "I: done\n");

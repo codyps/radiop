@@ -2,4 +2,6 @@
 
 # Supported Hardware
 
- - Alinco DJ-C7 (download only)
+Model        | dl | ul | settings| channels
+-------------+----+----+---------+---------
+Alinco DJ-C7 | y  | ?  | n       | n
