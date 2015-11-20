@@ -1,4 +1,4 @@
-## config.sh: 24b7589, see https://github.com/jmesmon/cninja.git
+## config.sh: 19c1df6, see https://github.com/jmesmon/cninja.git
 # ex: sts=8 sw=8 ts=8 noet
 set -eu -o pipefail
 

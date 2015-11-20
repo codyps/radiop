@@ -9,5 +9,5 @@ PKGCONFIG_LIBS="libserialport"
 
 . "$(dirname $0)"/config.sh
 
-#config
+config
 bin dj-c7 dj-c7.c print.c
