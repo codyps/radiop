@@ -5,3 +5,12 @@
 Model        | dl | ul | settings| channels
 -------------+----+----+---------+---------
 Alinco DJ-C7 | y  | ?  | n       | n
+
+# Backstory
+
+While using Chirp to try to manage settings for a few different radios, I noticed it wasn't really what I was after:
+
+ - can create general lists of settings (only per-channel) in CSVs, but these general settings don't include some radio specific settings
+ - copying between radios doesn't work well due to differing settings
+ - no concept of channel grouping (even though some radios have that concept)
+ - no way to define custom convertions between different settings groups
