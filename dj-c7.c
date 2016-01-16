@@ -513,6 +513,9 @@ dj_recv(const struct dj_parms *p, struct sp_port *port)
 
 static const char *opts = "p:hnb:";
 
+#define STR_(x) #x
+#define STR(x) STR_(x)
+
 static void usage_(const char *prgm, int e)
 {
 	FILE *f;
@@ -522,13 +525,15 @@ static void usage_(const char *prgm, int e)
 		f = stdout;
 
 	fprintf(f,
-"usage: %s -p <serial-port> -b <binary file> <action>\n"
-"actions:\n"
-" send\n"
-" receive\n"
-"options: -%s\n"
-" -n	don't configure serial port\n"
-	, prgm, opts);
+"%sUsage: %s -p <serial-port> -b <binary file> <action>\n"
+"Actions:\n"
+"  send\n"
+"  receive\n"
+"Options: -%s\n"
+"  -n	don't configure serial port\n"
+"\n"
+"radiop version " STR(CFG_GIT_VERSION) "\n"
+	, e?"\n":"", prgm, opts);
 
 	exit(e);
 }
