@@ -30,7 +30,9 @@
 	- name
 	- display mode
 	- power level
-	- groups
+	- groups, banks: different manufs have different terms and abilites for
+	  each of these. We need to encode the restrictions and capabilities such that
+	  the smart-programmer can automatically layout it's channels for a given radio.
 
 ## Settings
 
@@ -77,3 +79,8 @@ download
 upload
 
 modify (hard, may need csv export and the use of external spread sheet program to edit)
+
+# Misc
+
+ - STEP can sometimes be adjusted for compatibility for the radio in question, and it should be
+ - STEP shouldn't be a required part of a memory specification
