@@ -12,5 +12,6 @@ While using Chirp to try to manage settings for a few different radios, I notice
 
  - can create general lists of settings (only per-channel) in CSVs, but these general settings don't include some radio specific settings
  - copying between radios doesn't work well due to differing settings
- - no concept of channel grouping (even though some radios have that concept)
+ - channel grouping isn't portable between radios
+ - tone & tx/rx configuration isn't structured well (ie: we shouldn't need split & cross)
  - no way to define custom convertions between different settings groups
