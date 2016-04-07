@@ -1,5 +1,7 @@
 .ninja_*
 build.ninja
 dj-c7
+config.h
+.config.h*
 
 data/

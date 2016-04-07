@@ -7,7 +7,9 @@
 #include <unistd.h>
 
 #include <libserialport.h>
+
 #include "print.h"
+#include "memory.h"
 
 /*
  * Decode stages:
@@ -114,32 +116,6 @@ struct dj_c7_pkt {
 	char action;
 	uint8_t data[DATA_LEN];
 };
-
-#if 0
-struct memory_range {
-	size_t off;
-	size_t len;
-	uint8_t data[];
-};
-
-struct memory {
-	struct htable ht;
-};
-
-
-void memory_init(struct memory *m)
-{
-	*m = (struct memory){
-		.range_ct = 0,
-		.ranges = NULL
-	};
-}
-
-void memory_insert(struct memory *m, char *data, size_t data_len, uint64_t offset)
-{
-	/* i need a fast insert mechanism */
-}
-#endif
 
 static ssize_t
 read_pkt(struct sp_port *port, char buf[static PKT_BYTES], size_t len)
